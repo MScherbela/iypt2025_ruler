@@ -1,0 +1,15 @@
+[project]
+name = "iypt2025-ruler"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipython>=9.2.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.5",
+]
+
+[tool.ruff]
+line-length = 120
