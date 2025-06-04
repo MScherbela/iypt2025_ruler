@@ -1,59 +1,68 @@
 # %%
 import numpy as np
 import matplotlib.pyplot as plt
-
-x_load = 1.0
-x_end = 2.0
-y_end = 2.0
-
-force = 2.0
-E_modulus = 1.0
-I_moment_of_inertia = 1.0
-load = -force / (E_modulus * I_moment_of_inertia)
-
-equations_and_values = [
-    # yL(0) = 0
-    ([1, 0, 0, 0, 0, 0, 0, 0], 0),
-    # yL'(0) = 0
-    ([0, 1, 0, 0, 0, 0, 0, 0], 0),
-    # yL(x_load) = xR(x_load)
-    ([1, x_load, x_load**2, x_load**3, -1, -x_load, -(x_load**2), -(x_load**3)], 0),
-    # yL'(x_load) = xR'(x_load)
-    ([0, 1, 2 * x_load, 3 * x_load**2, 0, -1, -2 * x_load, -3 * x_load**2], 0),
-    # yL''(x_load) = xR''(x_load)
-    ([0, 0, 2, 6 * x_load, 0, 0, -2, -6 * x_load], 0),
-    # yR'''(x_load) - xL'''(x_load) = F/EI,
-    ([0, 0, 0, -6, 0, 0, 0, 6], load),
-    # yR(x_end) = H
-    ([0, 0, 0, 0, 1, x_end, x_end**2, x_end**3], y_end),
-    # yR''(x_end) = 0
-    ([0, 0, 0, 0, 0, 0, 2, 6 * x_end], 0),
-]
+from ruler_equations import get_equations_clamped_end, get_equations_open_end, evaluate_polynomial, get_bending_energy
+from scipy.optimize import minimize_scalar
 
 
-def evaluate_polynomial(coeffs, x, derivative=0):
-    """Evaluate a polynomial defined by its coefficients at a given x."""
-    assert len(coeffs) == 4
-    if derivative == 0:
-        return coeffs[0] + coeffs[1] * x + coeffs[2] * x**2 + coeffs[3] * x**3
-    elif derivative == 1:
-        return coeffs[1] + 2 * coeffs[2] * x + 3 * coeffs[3] * x**2
-    elif derivative == 2:
-        return 2 * coeffs[2] + 6 * coeffs[3] * x
-    elif derivative == 3:
-        return 6 * coeffs[3] * np.ones_like(x)
+x_load = 0.1
+x_ball = 0.2
+r_ball = 0.05
+
+ruler_width = 0.05
+ruler_height = 2e-3
+
+force = 5.0
+E_modulus = 2e9
+I_moment_of_inertia = ruler_width * ruler_height**3 / 12
+EI = E_modulus * I_moment_of_inertia
+load = -force / EI
 
 
-M = np.array([eq[0] for eq in equations_and_values])
-b = np.array([eq[1] for eq in equations_and_values])
+def get_touch_angle(EI, x_load, force, x_ball, r_ball):
+    def potential_energy(touch_angle):
+        """Angle of the touch point with the vertical. At 0, the ruler touches at the top, at pi/2 it touches at the left end"""
+        x_end = x_ball - np.sin(touch_angle) * r_ball
+        y_end = np.cos(touch_angle) * r_ball + r_ball
+        slope = np.tan(touch_angle)
+
+        M, b = get_equations_clamped_end(x_load, load, x_end, y_end, slope)
+        coeffs = np.linalg.solve(M, b)
+        print(coeffs, x_load, EI)
+        E_left = get_bending_energy(coeffs[:4], 0, x_load, EI)
+        E_right = get_bending_energy(coeffs[4:], x_load, x_end, EI)
+        E_load = force * evaluate_polynomial(coeffs[:4], x_load, 0)
+        E = E_left + E_right + E_load
+        return E
+
+    # Step 1: rough search to approximately find minimum
+    n_angles = 100
+    angles = np.linspace(0, 0.99 * np.pi / 2, n_angles)
+    Epot = np.array([potential_energy(angle) for angle in angles])
+    idx_min = np.argmin(Epot)
+    # touch_angle = angles[idx_min]
+
+    # Step 2: refine search around the minimum
+    assert idx_min > 0 and idx_min < n_angles - 1, f"Minimum should not be at the boundaries; idx={idx_min}"
+    result = minimize_scalar(potential_energy, bracket=(angles[idx_min - 1], angles[idx_min + 1]), method="brent")
+    touch_angle = result.x
+    x_end = x_ball - np.sin(touch_angle) * r_ball
+    y_end = np.cos(touch_angle) * r_ball + r_ball
+    slope = np.tan(touch_angle)
+
+    return touch_angle, x_end, y_end, slope
+
+
+touch_angle, x_end, y_end, slope_end = get_touch_angle(EI, x_load, force, x_ball, r_ball)
+
+M, b = get_equations_clamped_end(x_load, load, x_end, y_end, slope_end)
+
 coeffs = np.linalg.solve(M, b)
 coeffs_left = coeffs[:4]
 coeffs_right = coeffs[4:]
 
 x_left = np.linspace(0, x_load, 100)
 x_right = np.linspace(x_load, x_end, 100)
-y_left = coeffs_left[0] + coeffs_left[1] * x_left + coeffs_left[2] * x_left**2 + coeffs_left[3] * x_left**3
-y_right = coeffs_right[0] + coeffs_right[1] * x_right + coeffs_right[2] * x_right**2 + coeffs_right[3] * x_right**3
 
 fig, axes = plt.subplots(2, 2, figsize=(10, 6))
 
@@ -67,7 +76,10 @@ for derivative in range(4):
     ax.axvline(x_load, color="gray", linestyle="--")
     ax.axhline(0, color="k", linestyle="-", zorder=-1)
     if derivative == 0:
+        circle = plt.Circle((x_ball, r_ball), r_ball, color="dimgray", fill=True)
+        ax.add_patch(circle)
         ax.plot([x_end, x_end], [0, y_end], color="k", lw=2)
+        ax.axis("equal")
 
 force_left = evaluate_polynomial(coeffs_left, x_load, 3) * E_modulus * I_moment_of_inertia
 force_right = -evaluate_polynomial(coeffs_right, x_load, 3) * E_modulus * I_moment_of_inertia
